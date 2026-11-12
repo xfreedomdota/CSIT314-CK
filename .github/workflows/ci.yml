@@ -92,10 +92,20 @@ jobs:
           MYSQL_DATABASE: interior_design
         ports: [ '3306:3306' ]
         options: >-
-          --health-cmd="mysqladmin ping -h localhost -proot"
+          --health-cmd="mysqladmin ping -h 127.0.0.1 --protocol=tcp -proot"
           --health-interval=5s --health-timeout=5s --health-retries=20
     steps:
       - uses: actions/checkout@v4
+
+      - name: Wait until MySQL accepts connections
+        env:
+          MYSQL_PWD: root
+        run: |
+          for i in $(seq 1 60); do
+            if mysql -h 127.0.0.1 -u root -e "SELECT 1" > /dev/null 2>&1; then echo "MySQL is ready"; exit 0; fi
+            echo "Waiting for MySQL ($i)"; sleep 2
+          done
+          echo "MySQL did not start"; exit 1
 
       - name: Import schema and test data (same order as in XAMPP)
         env:
@@ -120,7 +130,7 @@ jobs:
           MYSQL_DATABASE: interior_design
         ports: [ '3306:3306' ]
         options: >-
-          --health-cmd="mysqladmin ping -h localhost -proot"
+          --health-cmd="mysqladmin ping -h 127.0.0.1 --protocol=tcp -proot"
           --health-interval=5s --health-timeout=5s --health-retries=20
     steps:
       - uses: actions/checkout@v4
@@ -130,6 +140,16 @@ jobs:
           php-version: '8.2'
           extensions: pdo, pdo_mysql
           coverage: none
+
+      - name: Wait until MySQL accepts connections
+        env:
+          MYSQL_PWD: root
+        run: |
+          for i in $(seq 1 60); do
+            if mysql -h 127.0.0.1 -u root -e "SELECT 1" > /dev/null 2>&1; then echo "MySQL is ready"; exit 0; fi
+            echo "Waiting for MySQL ($i)"; sleep 2
+          done
+          echo "MySQL did not start"; exit 1
 
       - name: Load the database
         env:
