@@ -44,7 +44,7 @@ const DASHBOARD = [
     ],
     'Customer' => [
         'Discover' => [
-            22 => ['Search projects', 'Find designs by keyword or category'],
+            22 => ['Browse & view projects', 'Search, filter and open any design'],
         ],
         'My shortlist' => [
             26 => ['View my shortlist', 'Compare saved designs side by side'],

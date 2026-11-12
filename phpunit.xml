@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- PHPUnit settings used by the CI/CD pipeline and by "phpunit" run locally -->
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="https://schema.phpunit.de/10.5/phpunit.xsd"
+         colors="true"
+         failOnWarning="true"
+         cacheDirectory=".phpunit.cache">
+    <testsuites>
+        <testsuite name="CK unit tests (User Stories #1-#48)">
+            <directory suffix="Test.php">Tests</directory>
+        </testsuite>
+    </testsuites>
+</phpunit>

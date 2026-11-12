@@ -1,5 +1,7 @@
 # CSIT314-CK
 
+[![CI/CD Pipeline](https://github.com/xfreedomdota/CSIT314-CK/actions/workflows/ci.yml/badge.svg)](https://github.com/xfreedomdota/CSIT314-CK/actions/workflows/ci.yml)
+
 CK interior design platform: matches renovation customers to interior designers.
 All 48 user stories follow the Boundary-Control-Entity (B-C-E) framework:
 one Boundary page and one Control class per story, using shared Entity classes.
@@ -13,7 +15,7 @@ one Boundary page and one Control class per story, using shared Entity classes.
 | `Database/` | `interior_design.sql` (schema + demo data) and `Database.php` (connection) |
 | `Assets/` | Images: home page photos, `projects/` sample project photos, `uploads/` for designer uploads |
 | `Tests/` | PHPUnit unit tests for every story (run automatically by GitHub Actions) |
-| `.github/workflows/` | CI pipeline |
+| `.github/` | CI/CD pipeline (`workflows/ci.yml`) and its check scripts (`scripts/`) |
 
 ## Run locally (XAMPP)
 1. Copy this folder into `C:\xampp\htdocs\`.
@@ -24,22 +26,21 @@ one Boundary page and one Control class per story, using shared Entity classes.
 5. Open `http://localhost/<folder name>/` and click **Login**.
 
 ## Test data
-`Database/generate_data.php` creates `Database/test_data.sql` with random but realistic records:
-Together with the demo rows in `interior_design.sql` this gives 100 customers, 100 interior designers
-(each with one company, so 100 companies), 5 platform managers, 5 user admins, 100 categories, 100 projects,
-100 shortlists and 100 project views spread over the last 30 days.
+`Database/generate_data.php` creates `Database/test_data.sql`. Together with the demo rows in
+`interior_design.sql` this gives 100 interior designers (each with one company, so 100 companies),
+100 categories, 100 projects, 100 shortlists and 100 project views spread over the last 30 days,
+plus the minimum accounts needed to test every user story for the other roles (111 accounts in total).
 
 To regenerate it: `C:\xampp\php\php.exe Database\generate_data.php`, then re-import both SQL files into an empty database.
+`Database/test_data_queries.sql` holds one SQL query per user story; its results are the Test Data in the report.
 
 Every generated user's password is **Test123!**
-| Role | Usernames |
-|---|---|
-| Customer | cust001 - cust098 |
-| Interior Designer | des001 - des098 |
-| Platform Manager | pm001 - pm004 |
-| User Admin | ua001 - ua003 |
-
-About 5% of generated users are suspended on purpose, so some of them cannot log in.
+| Role | Usernames | Active / Suspended |
+|---|---|---|
+| User Admin | admin01 - admin02 | admin01 Active, admin02 Suspended |
+| Interior Designer | ID01 - ID98 | ID01 Active, ID02 Suspended |
+| Customer | Customer01 - Customer02 | Customer01 Active, Customer02 Suspended |
+| Platform Manager | PM01 - PM02 | PM01 Active, PM02 Suspended |
 
 ## Demo logins
 | Role | Username | Password |
@@ -106,7 +107,23 @@ Also viewable in the app at `Boundary/StoryIndex.php`.
 Stories #13, #20 and #39 share one login page and controller (`13_20_39_LoginPage.php` → `13_20_39_LoginController.php`), and #14, #21 and #40 share one logout page and controller (`14_21_40_LogOutPage.php` → `14_21_40_LogOutController.php`), matching the design diagrams. #1 and #2 extend them for the User Admin.
 `IDPController.php` is a shared base class for #27-#36 (validation and photo upload).
 
-## Run tests
-```
-phpunit Tests
-```
+## CI/CD pipeline
+Every push and pull request to `main` runs `.github/workflows/ci.yml` on GitHub Actions:
+
+| Stage | Job | What it checks |
+|---|---|---|
+| 1 | Lint | Every PHP file in Boundary, Control, Entity, Database and Tests has no syntax errors |
+| 2 | Unit tests | 84 PHPUnit tests (User Stories #1-#48) on PHP 8.2 and 8.3; JUnit reports kept as artifacts |
+| 2 | Database | Imports the schema and test data into MySQL 8, checks the 100-record counts, business rules (one company per designer, progress 0-100, no duplicate shortlists), the active/suspended test accounts, and runs all 48 queries in `test_data_queries.sql` |
+| 3 | Smoke test | Starts the app with PHP's web server on that database, logs in as every role (valid, wrong password, suspended), opens every page for every role and checks there are no PHP errors, then logs out |
+| 4 | Package (CD) | Builds `ck-platform-<version>.zip` (app only, no tests) and keeps it as a downloadable artifact |
+| 5 | Release (CD) | When a version tag such as `v1.0.0` is pushed, publishes a GitHub Release with the zip attached |
+
+A stage only runs if the stages before it passed, so a broken commit never gets packaged.
+Results appear on the **Actions** tab; each run has a summary with the test list and check counts.
+`Database/Database.php` reads `DB_HOST`, `DB_NAME`, `DB_USER` and `DB_PASS` from the environment
+(the pipeline sets them) and falls back to the XAMPP defaults, so nothing changes when running locally.
+
+To publish a release: **Releases → Draft a new release → Choose a tag → type `v1.0.0` → Create new tag → Publish**
+(or `git tag v1.0.0 && git push origin v1.0.0`).
+

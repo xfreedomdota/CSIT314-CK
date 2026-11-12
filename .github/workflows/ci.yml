@@ -1,29 +1,206 @@
-name: CI
+name: CI/CD Pipeline
 
+# When the pipeline runs
 on:
   push:
     branches: [ main ]
+    tags: [ 'v*' ]          # pushing a version tag (e.g. v1.0.0) also publishes a release
   pull_request:
     branches: [ main ]
-  workflow_dispatch:
+  workflow_dispatch:        # "Run workflow" button on the Actions tab
+
+# If a newer commit is pushed, cancel the older run that is still going
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DB_HOST: 127.0.0.1
+  DB_NAME: interior_design
+  DB_USER: root
+  DB_PASS: root
 
 jobs:
-  build-and-test:
+  # ---------------------------------------------------------------- Stage 1
+  lint:
+    name: 1. Lint (PHP syntax check)
     runs-on: ubuntu-latest
-
     steps:
-      - name: Check out code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up PHP and PHPUnit
-        uses: shivammathur/setup-php@v2
+      - uses: shivammathur/setup-php@v2
         with:
           php-version: '8.2'
-          extensions: pdo, pdo_sqlite, pdo_mysql
-          tools: phpunit:10
+          coverage: none
 
-      - name: Lint (syntax check every PHP file)
-        run: find . -name '*.php' -not -path './.git/*' -print0 | xargs -0 -n1 php -l
+      - name: Check every PHP file for syntax errors
+        run: |
+          find Boundary Control Entity Database Tests -name '*.php' -print0 | xargs -0 -n1 php -l
+          echo "### Lint: $(find Boundary Control Entity Database Tests -name '*.php' | wc -l) PHP files, no syntax errors" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Run unit tests
-        run: phpunit --testdox --display-warnings Test
+  # ---------------------------------------------------------------- Stage 2a
+  unit-tests:
+    name: 2. Unit tests (PHP ${{ matrix.php }})
+    needs: lint
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: [ '8.2', '8.3' ]   # same code tested on two PHP versions (XAMPP ships 8.2)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: pdo, pdo_sqlite
+          tools: phpunit:10.5
+          coverage: none
+
+      - name: Run PHPUnit (84 tests covering User Stories #1-#48)
+        run: |
+          mkdir -p reports
+          phpunit --configuration phpunit.xml --testdox \
+                  --log-junit reports/junit-php${{ matrix.php }}.xml \
+                  --testdox-text reports/testdox-php${{ matrix.php }}.txt
+
+      - name: Add test results to the run summary
+        if: always()
+        run: |
+          echo "### Unit tests on PHP ${{ matrix.php }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat reports/testdox-php${{ matrix.php }}.txt >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-php${{ matrix.php }}
+          path: reports/
+
+  # ---------------------------------------------------------------- Stage 2b
+  database:
+    name: 2. Database (MySQL schema + test data)
+    needs: lint
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: interior_design
+        ports: [ '3306:3306' ]
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -proot"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Import schema and test data (same order as in XAMPP)
+        env:
+          MYSQL_PWD: root
+        run: |
+          mysql -h 127.0.0.1 -u root interior_design < Database/interior_design.sql
+          mysql -h 127.0.0.1 -u root interior_design < Database/test_data.sql
+
+      - name: Verify record counts, business rules and test accounts
+        run: bash .github/scripts/verify_database.sh
+
+  # ---------------------------------------------------------------- Stage 3
+  smoke-test:
+    name: 3. Smoke test (run the web app)
+    needs: [ unit-tests, database ]
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: interior_design
+        ports: [ '3306:3306' ]
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -proot"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: pdo, pdo_mysql
+          coverage: none
+
+      - name: Load the database
+        env:
+          MYSQL_PWD: root
+        run: |
+          mysql -h 127.0.0.1 -u root interior_design < Database/interior_design.sql
+          mysql -h 127.0.0.1 -u root interior_design < Database/test_data.sql
+
+      - name: Start the app with PHP's built-in web server
+        run: |
+          php -d display_errors=1 -d error_reporting=-1 -S 127.0.0.1:8000 -t . > server.log 2>&1 &
+          sleep 2
+
+      - name: Log in as every role and open every page
+        run: bash .github/scripts/smoke_test.sh
+
+      - name: Upload server log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-server-log
+          path: server.log
+
+  # ---------------------------------------------------------------- Stage 4 (CD)
+  package:
+    name: 4. Package release build
+    needs: smoke-test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the deployable zip (app only, no tests or CI files)
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          [[ "$GITHUB_REF" == refs/tags/* ]] || VERSION="build-$(git rev-parse --short HEAD)"
+          mkdir -p dist
+          zip -r "dist/ck-platform-${VERSION}.zip" index.html README.md Assets Boundary Control Entity Database \
+              -x '*/.DS_Store'
+          echo "### Package: dist/ck-platform-${VERSION}.zip ($(du -h dist/*.zip | cut -f1))" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ck-platform
+          path: dist/*.zip
+          retention-days: 30
+
+  release:
+    name: 5. Publish GitHub Release
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ck-platform
+          path: dist
+
+      - name: Create the release (or add the zip if the release was made on GitHub)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/*.zip --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/*.zip \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "CK Platform $GITHUB_REF_NAME" \
+              --notes "Tested build of the CK interior design platform. Unzip into C:\\xampp\\htdocs\\, then import Database/interior_design.sql and Database/test_data.sql."
+          fi
+          echo "### Released $GITHUB_REF_NAME" >> "$GITHUB_STEP_SUMMARY"
